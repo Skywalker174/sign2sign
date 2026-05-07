@@ -2,6 +2,7 @@ import torch
 import json
 import os
 import sys
+import onnx
 
 BASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(BASE_PATH)
@@ -15,10 +16,41 @@ def export_language(lang):
         model = SignModel()
         model.load_state_dict(torch.load(model_path, map_location='cpu', weights_only=True))
         model.eval()
+        
         dummy_input = torch.randn(1, 63)
-        onnx_out = os.path.join(BASE_PATH, f"{lang}_model.onnx")
-        torch.onnx.export(model, dummy_input, onnx_out, opset_version=11)
-        print(f"ASL ONNX Success: {onnx_out}")
+        temp_onnx = os.path.join(BASE_PATH, f"temp_{lang}.onnx")
+        final_onnx = os.path.join(BASE_PATH, f"{lang}_model.onnx")
+
+        # Step 1: Initial export
+        torch.onnx.export(
+            model, 
+            dummy_input, 
+            temp_onnx,
+            export_params=True,
+            opset_version=12,
+            do_constant_folding=True,
+            input_names=['input'],
+            output_names=['output']
+        )
+
+        # Step 2: Force embedding weights into a single file using ONNX library
+        onnx_model = onnx.load(temp_onnx)
+        onnx.save_model(
+            onnx_model, 
+            final_onnx, 
+            save_as_external_data=False # This is the magic fix
+        )
+        
+        # Cleanup temporary files
+        if os.path.exists(temp_onnx):
+            os.remove(temp_onnx)
+        
+        # Also cleanup the annoying .data file if it was created during Step 1
+        data_file = temp_onnx + ".data"
+        if os.path.exists(data_file):
+            os.remove(data_file)
+
+        print(f"ONNX Success: {final_onnx}")
     
     if os.path.exists(scaler_path):
         scaler = torch.load(scaler_path, weights_only=False)
