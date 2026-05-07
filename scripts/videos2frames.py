@@ -1,9 +1,11 @@
 import os
 import cv2
 
+frame_id = 0
+
 def extract_frames(video_path, image_folder, fps=30):
-    """Extract frames from a video and save them to a folder with local numbering."""
-    local_frame_id = 0  # Reset local frame ID for each video
+    global frame_id
+    frame_count = 0
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"Error: Could not open video {video_path}")
@@ -13,36 +15,33 @@ def extract_frames(video_path, image_folder, fps=30):
     if video_fps == 0:
         print(f"Error: FPS for video {video_path} is 0")
         return
-
+    
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / video_fps
 
     skip_interval = max(1, int(video_fps / fps))  # Ensure skip_interval is at least 1
-    processed_frames = 0
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Skip frames if the video is longer than 4 seconds
-        if duration > 4 and processed_frames % (skip_interval * 2) != 0:
-            processed_frames += 1
+        if duration > 4 and frame_count % (skip_interval * 2) != 0:  # Skip more frames for videos longer than 4 seconds
+            frame_count += 1
             continue
 
-        # Save each frame with local numbering
-        frame_filename = os.path.join(image_folder, f"frame_{local_frame_id:04d}.jpg")
+        frame_filename = os.path.join(image_folder, f"frame_{frame_id}.jpg")
         cv2.imwrite(frame_filename, frame)
-        local_frame_id += 1
-        processed_frames += 1
+
+        frame_id += 1
+        frame_count += 1
 
     cap.release()
-    print(f"Processed video: {video_path} into {local_frame_id} frames.")
+    print(f"Processed video: {video_path} into {frame_count} frames. Now we have {frame_id} frames in total.")
 
 def process_all_videos(video_dir, output_image_dir):
-    """Process all videos in a directory structure and extract frames."""
-    folder_counter = {}  # Counter for naming folders per digit
-
+    global frame_id
+    frame_id = 0
     for lang in ['asl', 'csl']:
         lang_folder = os.path.join(video_dir, lang)
         for digit_folder in os.listdir(lang_folder):
@@ -50,23 +49,13 @@ def process_all_videos(video_dir, output_image_dir):
             if not os.path.isdir(video_folder):
                 continue
 
-            # Initialize folder counter for each digit
-            if digit_folder not in folder_counter:
-                folder_counter[digit_folder] = 0
+            image_folder = os.path.join(output_image_dir, lang, digit_folder)
+            os.makedirs(image_folder, exist_ok=True)
 
             for video_file in os.listdir(video_folder):
                 if video_file.endswith('.mp4'):
                     video_path = os.path.join(video_folder, video_file)
-
-                    # Generate a new folder name based on digit and counter
-                    new_folder_name = f"{digit_folder}.{folder_counter[digit_folder]}"
-                    folder_counter[digit_folder] += 1
-
-                    unique_image_folder = os.path.join(output_image_dir, lang, digit_folder, new_folder_name)
-                    os.makedirs(unique_image_folder, exist_ok=True)
-
-                    # Extract frames for the current video
-                    extract_frames(video_path, unique_image_folder)
+                    extract_frames(video_path, image_folder)
 
 if __name__ == "__main__":
     data_dir = './data'

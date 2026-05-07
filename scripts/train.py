@@ -1,134 +1,95 @@
+import os
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
+from evaluate import evaluate_model, SignModel
 
-class TransformerClassifier(nn.Module):
-    """
-    A Transformer-based classifier for hand gesture recognition.
-    """
-    def __init__(self, input_dim, max_len, num_classes, num_heads, num_layers, d_ff):
-        super(TransformerClassifier, self).__init__()
-        self.embedding = nn.Linear(input_dim, input_dim)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=input_dim, nhead=num_heads, dim_feedforward=d_ff, dropout=0.3, batch_first=True
-        )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.fc = nn.Linear(input_dim, num_classes)
-
-    def forward(self, x):
-        x = self.embedding(x)
-        x = self.encoder(x)
-        x = x.mean(dim=1)  # Global average pooling
-        x = self.fc(x)
-        return x
-
-def train_model(features, labels, model_save_path, max_frames, num_features):
-    """
-    Train a Transformer-based model for hand gesture classification.
-
-    Args:
-        features (np.array): Normalized feature data.
-        labels (np.array): Label data.
-        model_save_path (str): Path to save the trained model.
-        max_frames (int): Maximum number of frames per sequence.
-        num_features (int): Number of features per frame.
-    """
-    print(f"Features shape: {features.shape}")
-    print(f"Labels shape: {labels.shape}")
-    print(f"Unique labels before adjustment: {np.unique(labels)}")
-
-    # Normalize features
-    scaler = StandardScaler()
-    features = scaler.fit_transform(features.reshape(-1, num_features)).reshape(features.shape)
-
-    # Adjust labels to zero-indexing
-    labels = labels - 1
-    print(f"Unique labels after adjustment: {np.unique(labels)}")
-
-    # Reshape features
-    total_frames = features.shape[0]
-    usable_frames = (total_frames // max_frames) * max_frames
-    features = features[:usable_frames]
-    labels = labels[:usable_frames // max_frames]
-
-    print(f"Trimmed features shape: {features.shape}")
-    print(f"Labels shape: {labels.shape}")
-
-    # Convert to tensors
-    X_tensor = torch.tensor(features, dtype=torch.float32).reshape(-1, max_frames, num_features)
-    y_tensor = torch.tensor(labels, dtype=torch.long)
-
-    # Split into train and validation sets
-    train_ratio = 0.8
-    train_size = int(X_tensor.size(0) * train_ratio)
-    X_train, X_val = X_tensor[:train_size], X_tensor[train_size:]
-    y_train, y_val = y_tensor[:train_size], y_tensor[train_size:]
-
-    train_dataset = TensorDataset(X_train, y_train)
-    val_dataset = TensorDataset(X_val, y_val)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-
-    # Initialize model
-    num_classes = len(set(labels))
-    model = TransformerClassifier(
-        input_dim=num_features, 
-        max_len=max_frames, 
-        num_classes=num_classes, 
-        num_heads=3,  # Adjusted to a valid divisor of 177
-        num_layers=2, 
-        d_ff=256
-    )
-
+def train_model(train_loader, test_loader, model_path, scaler_path, log_path):
+    model = SignModel()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    scaler = StandardScaler()
 
-    # Training loop
-    epochs = 20
-    for epoch in range(epochs):
-        model.train()
-        running_loss = 0.0
-        for inputs, targets in train_loader:
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
+    epochs = 1000
+    train_losses = []
+    test_accuracies = []
 
-        scheduler.step()
+    with open(log_path, 'w') as log_file:
+        log_file.write('Epoch,Loss,Accuracy\n')
 
-        # Validate the model
-        model.eval()
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for inputs, targets in val_loader:
+        for epoch in range(epochs):
+            model.train()
+            running_loss = 0.0
+
+            for inputs, labels in train_loader:
+                inputs = scaler.fit_transform(inputs.numpy())
+                inputs = torch.tensor(inputs, dtype=torch.float32)
+                optimizer.zero_grad()
                 outputs = model(inputs)
-                _, predicted = torch.max(outputs, 1)
-                total += targets.size(0)
-                correct += (predicted == targets).sum().item()
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item()
 
-        val_accuracy = correct / total
-        print(f"Epoch {epoch + 1}, Loss: {running_loss / len(train_loader):.4f}, Validation Accuracy: {val_accuracy:.4f}")
+            train_losses.append(running_loss / len(train_loader))
 
-    # Save the model and scaler
-    torch.save(model.state_dict(), model_save_path)
-    torch.save(scaler, './models/scaler.pth')
-    print(f"Model saved to {model_save_path}")
+            # Evaluate on test set
+            model.eval()
+            correct = 0
+            total = 0
+            with torch.no_grad():
+                for inputs, labels in test_loader:
+                    inputs = scaler.transform(inputs.numpy())
+                    inputs = torch.tensor(inputs, dtype=torch.float32)
+                    outputs = model(inputs)
+                    _, predicted = torch.max(outputs, 1)
+                    total += labels.size(0)
+                    correct += (predicted == labels).sum().item()
+
+            accuracy = correct / total
+            test_accuracies.append(accuracy)
+            log_file.write(f"{epoch},{running_loss / len(train_loader)},{accuracy}\n")
+            if epoch % 10 == 0:
+
+                print(f"Epoch {epoch}, Loss: {running_loss / len(train_loader)}, Accuracy: {accuracy}")
+
+    torch.save(model.state_dict(), model_path)
+    torch.save(scaler, scaler_path)
 
 if __name__ == "__main__":
-    # Load data
-    features = np.load('./data/features.npy')
-    labels = np.load('./data/labels.npy')
+    prepared_data_dir = './data/prepared_data'
+    log_dir = './data/logs'
+    os.makedirs(log_dir, exist_ok=True)
 
-    # Configuration
-    model_save_path = './models/transformer_model.pth'
-    max_frames = 236
-    num_features = 59 * 3
+    def load_data(language):
+        X_train = np.load(os.path.join(prepared_data_dir, f'X_{language}_train.npy'))
+        y_train = np.load(os.path.join(prepared_data_dir, f'y_{language}_train.npy'))
+        X_test = np.load(os.path.join(prepared_data_dir, f'X_{language}_test.npy'))
+        y_test = np.load(os.path.join(prepared_data_dir, f'y_{language}_test.npy'))
 
-    train_model(features, labels, model_save_path, max_frames, num_features)
+        y_train = torch.tensor(np.argmax(y_train, axis=1), dtype=torch.long)
+        y_test = torch.tensor(np.argmax(y_test, axis=1), dtype=torch.long)
+
+        return X_train, y_train, X_test, y_test
+
+    X_asl_train, y_asl_train, X_asl_test, y_asl_test = load_data('asl')
+    X_csl_train, y_csl_train, X_csl_test, y_csl_test = load_data('csl')
+
+    train_dataset_asl = TensorDataset(torch.tensor(X_asl_train, dtype=torch.float32), y_asl_train)
+    test_dataset_asl = TensorDataset(torch.tensor(X_asl_test, dtype=torch.float32), y_asl_test)
+    train_loader_asl = DataLoader(train_dataset_asl, batch_size=32, shuffle=True)
+    test_loader_asl = DataLoader(test_dataset_asl, batch_size=32, shuffle=False)
+
+    train_dataset_csl = TensorDataset(torch.tensor(X_csl_train, dtype=torch.float32), y_csl_train)
+    test_dataset_csl = TensorDataset(torch.tensor(X_csl_test, dtype=torch.float32), y_csl_test)
+    train_loader_csl = DataLoader(train_dataset_csl, batch_size=32, shuffle=True)
+    test_loader_csl = DataLoader(test_dataset_csl, batch_size=32, shuffle=False)
+
+    print("Training ASL model...")
+    train_model(train_loader_asl, test_loader_asl, 'models/asl_model.pth', 'models/scaler_asl.pth', os.path.join(log_dir, 'asl_training_log.csv'))
+
+    print("Training CSL model...")
+    train_model(train_loader_csl, test_loader_csl, 'models/csl_model.pth', 'models/scaler_csl.pth', os.path.join(log_dir, 'csl_training_log.csv'))
